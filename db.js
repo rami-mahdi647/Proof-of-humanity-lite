@@ -11,6 +11,7 @@ db.exec(`
 CREATE TABLE IF NOT EXISTS proofs (
   id TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL,
+  tenant TEXT,
   prompt TEXT NOT NULL,
   answer TEXT NOT NULL,
   hash TEXT NOT NULL,
@@ -38,6 +39,7 @@ const getTenantDailyUsageStmt = db.prepare(`
   SELECT count FROM tenant_daily_usage WHERE tenant = ? AND day_key = ?
 `);
 
+ codex/implement-daily-usage-limit-tracking
 const deleteOldTenantUsageStmt = db.prepare(`
   DELETE FROM tenant_daily_usage WHERE day_key < ?
 `);
@@ -65,3 +67,12 @@ module.exports = {
   incrementTenantDailyUsage,
   cleanupTenantDailyUsage
 };
+
+try {
+  db.exec("ALTER TABLE proofs ADD COLUMN tenant TEXT");
+} catch {
+  // columna ya existe
+}
+
+module.exports = db;
+ main
