@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const helmet = require("helmet");
 const crypto = require("crypto");
+const fs = require("fs");
 const { nanoid } = require("nanoid");
 const path = require("path");
 const db = require("./db");
@@ -12,18 +13,40 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "10kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
+function loadLicenses() {
+  try {
+    const raw = fs.readFileSync("licenses.json", "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+let LICENSES = loadLicenses();
+
 function requireLicense(req, res, next) {
   if (req.path === "/health") return next();
 
-  const key = (process.env.LICENSE_KEY || "").trim();
-  const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(key);
+  const key = (process.env.LICENSE_KEY || "").trim().toUpperCase();
+  const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(key);
 
-  if (!key || !okFormat) {
+  if (!okFormat) {
     return res.status(503).json({
       error: "License not configured",
       hint: "Set LICENSE_KEY env var (format: POH-XXXX-XXXX-XXXX)."
     });
   }
+
+  const entry = LICENSES[key];
+  if (!entry) {
+    return res.status(403).json({
+      error: "Invalid license key"
+    });
+  }
+
+  req.tenant = entry.tenant;
+  req.plan = entry.plan;
+  req.maxPerDay = entry.max_per_day ?? 5000;
 
   next();
 }
@@ -53,6 +76,24 @@ function tooFast(ip) {
   return now - last < 4000; // 4s
 }
 
+const tenantDaily = new Map(); // tenant -> { dayKey, count }
+function dayKey() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`;
+}
+
+function tenantExceeded(tenant, max) {
+  const key = dayKey();
+  const cur = tenantDaily.get(tenant) || { dayKey: key, count: 0 };
+  if (cur.dayKey !== key) {
+    cur.dayKey = key;
+    cur.count = 0;
+  }
+  cur.count++;
+  tenantDaily.set(tenant, cur);
+  return cur.count > max;
+}
+
 app.get("/api/prompt", (req, res) => {
   const prompt = PROMPTS[Math.floor(Math.random() * PROMPTS.length)];
   res.json({ prompt });
@@ -61,6 +102,10 @@ app.get("/api/prompt", (req, res) => {
 app.post("/api/prove", (req, res) => {
   const ip = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").toString().split(",")[0].trim();
   if (tooFast(ip)) return res.status(429).json({ error: "Demasiado rápido. Espera unos segundos." });
+
+  if (tenantExceeded(req.tenant, req.maxPerDay)) {
+    return res.status(429).json({ error: "Daily limit reached for this license" });
+  }
 
   const prompt = (req.body?.prompt || "").toString().trim();
   const answerRaw = (req.body?.answer || "").toString();
@@ -78,14 +123,14 @@ app.post("/api/prove", (req, res) => {
   const hash = sha256(`${createdAt}|${prompt}|${answer}|${nonce}`);
 
   const stmt = db.prepare(`
-    INSERT INTO proofs (id, created_at, prompt, answer, hash, ua, ip_hint)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO proofs (id, created_at, tenant, prompt, answer, hash, ua, ip_hint)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const ua = (req.headers["user-agent"] || "").toString().slice(0, 180);
   const ip_hint = ip ? sha256(ip).slice(0, 10) : null; // no guardamos IP real
 
-  stmt.run(id, createdAt, prompt, answer, hash, ua, ip_hint);
+  stmt.run(id, createdAt, req.tenant, prompt, answer, hash, ua, ip_hint);
 
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
@@ -104,7 +149,7 @@ app.get("/p/:id", (req, res) => {
 // datos para render en proof.html
 app.get("/api/proof/:id", (req, res) => {
   const id = req.params.id;
-  const row = db.prepare("SELECT id, created_at, prompt, answer, hash FROM proofs WHERE id = ?").get(id);
+  const row = db.prepare("SELECT id, created_at, tenant, prompt, answer, hash FROM proofs WHERE id = ?").get(id);
   if (!row) return res.status(404).json({ error: "No encontrado." });
   res.json(row);
 });
