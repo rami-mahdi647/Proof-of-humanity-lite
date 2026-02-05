@@ -12,18 +12,32 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "10kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
+const LICENSES = {
+  "POH-ABCD-1234-Z9Y8": {
+    tenant: "demo-wallet",
+    plan: "starter",
+    maxPerDay: 500
+  }
+};
+
 function requireLicense(req, res, next) {
   if (req.path === "/health") return next();
 
-  const key = (process.env.LICENSE_KEY || "").trim();
-  const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(key);
+  const incomingKey = req.get("x-license-key") || req.query.license_key || process.env.LICENSE_KEY || "";
+  const key = incomingKey.toString().trim().toUpperCase();
+  const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(key);
+  const license = LICENSES[key];
 
-  if (!key || !okFormat) {
+  if (!key || !okFormat || !license) {
     return res.status(503).json({
-      error: "License not configured",
-      hint: "Set LICENSE_KEY env var (format: POH-XXXX-XXXX-XXXX)."
+      error: "Invalid or missing license",
+      hint: "Send x-license-key header (format: POH-XXXX-XXXX-XXXX)."
     });
   }
+
+  req.tenant = license.tenant;
+  req.plan = license.plan;
+  req.maxPerDay = license.maxPerDay;
 
   next();
 }
