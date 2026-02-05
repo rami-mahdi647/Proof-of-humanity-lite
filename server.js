@@ -78,14 +78,14 @@ app.post("/api/prove", (req, res) => {
   const hash = sha256(`${createdAt}|${prompt}|${answer}|${nonce}`);
 
   const stmt = db.prepare(`
-    INSERT INTO proofs (id, created_at, prompt, answer, hash, ua, ip_hint)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO proofs (id, created_at, prompt, answer, hash, tenant, ua, ip_hint)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const ua = (req.headers["user-agent"] || "").toString().slice(0, 180);
   const ip_hint = ip ? sha256(ip).slice(0, 10) : null; // no guardamos IP real
 
-  stmt.run(id, createdAt, prompt, answer, hash, ua, ip_hint);
+  stmt.run(id, createdAt, prompt, answer, hash, req.tenant || null, ua, ip_hint);
 
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
