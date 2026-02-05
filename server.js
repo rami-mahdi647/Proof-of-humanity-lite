@@ -77,20 +77,50 @@ fs.watchFile(LICENSES_FILE, { interval: 1000 }, () => {
   licensesState.invalidated = true;
   loadLicenses();
 });
+ codex/refactorizar-requirelicense-para-usar-headers
+const LICENSES = {
+  "POH-ABCD-1234-Z9Y8": {
+    tenant: "demo-wallet",
+    plan: "starter",
+    maxPerDay: 500
+  }
+};
+
+function loadLicenses() {
+  try {
+    const raw = fs.readFileSync("licenses.json", "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+let LICENSES = loadLicenses();
+ main
 
 function requireLicense(req, res, next) {
   if (req.path === "/health") return next();
 
-  const key = (process.env.LICENSE_KEY || "").trim();
-  const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(key);
+ codex/refactorizar-requirelicense-para-usar-headers
+  const incomingKey = req.get("x-license-key") || req.query.license_key || process.env.LICENSE_KEY || "";
+  const key = incomingKey.toString().trim().toUpperCase();
+  const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(key);
+  const license = LICENSES[key];
 
-  if (!key || !okFormat) {
+  if (!key || !okFormat || !license) {
+
+  const key = (process.env.LICENSE_KEY || "").trim().toUpperCase();
+  const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(key);
+
+  if (!okFormat) {
+ main
     return res.status(503).json({
-      error: "License not configured",
-      hint: "Set LICENSE_KEY env var (format: POH-XXXX-XXXX-XXXX)."
+      error: "Invalid or missing license",
+      hint: "Send x-license-key header (format: POH-XXXX-XXXX-XXXX)."
     });
   }
 
+ codex/add-periodic-license-reload-with-error-handling
   const allowedLicenses = loadLicenses();
   if (allowedLicenses && !allowedLicenses.has(key)) {
     return res.status(403).json({
@@ -98,6 +128,25 @@ function requireLicense(req, res, next) {
     });
   }
 
+
+ codex/refactorizar-requirelicense-para-usar-headers
+  req.tenant = license.tenant;
+  req.plan = license.plan;
+  req.maxPerDay = license.maxPerDay;
+
+  const entry = LICENSES[key];
+  if (!entry) {
+    return res.status(403).json({
+      error: "Invalid license key"
+    });
+  }
+
+  req.tenant = entry.tenant;
+  req.plan = entry.plan;
+  req.maxPerDay = entry.max_per_day ?? 5000;
+ main
+
+ main
   next();
 }
 
@@ -126,6 +175,24 @@ function tooFast(ip) {
   return now - last < 4000; // 4s
 }
 
+const tenantDaily = new Map(); // tenant -> { dayKey, count }
+function dayKey() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`;
+}
+
+function tenantExceeded(tenant, max) {
+  const key = dayKey();
+  const cur = tenantDaily.get(tenant) || { dayKey: key, count: 0 };
+  if (cur.dayKey !== key) {
+    cur.dayKey = key;
+    cur.count = 0;
+  }
+  cur.count++;
+  tenantDaily.set(tenant, cur);
+  return cur.count > max;
+}
+
 app.get("/api/prompt", (req, res) => {
   const prompt = PROMPTS[Math.floor(Math.random() * PROMPTS.length)];
   res.json({ prompt });
@@ -134,6 +201,10 @@ app.get("/api/prompt", (req, res) => {
 app.post("/api/prove", (req, res) => {
   const ip = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").toString().split(",")[0].trim();
   if (tooFast(ip)) return res.status(429).json({ error: "Demasiado rápido. Espera unos segundos." });
+
+  if (tenantExceeded(req.tenant, req.maxPerDay)) {
+    return res.status(429).json({ error: "Daily limit reached for this license" });
+  }
 
   const prompt = (req.body?.prompt || "").toString().trim();
   const answerRaw = (req.body?.answer || "").toString();
@@ -151,14 +222,14 @@ app.post("/api/prove", (req, res) => {
   const hash = sha256(`${createdAt}|${prompt}|${answer}|${nonce}`);
 
   const stmt = db.prepare(`
-    INSERT INTO proofs (id, created_at, prompt, answer, hash, ua, ip_hint)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO proofs (id, created_at, tenant, prompt, answer, hash, ua, ip_hint)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const ua = (req.headers["user-agent"] || "").toString().slice(0, 180);
   const ip_hint = ip ? sha256(ip).slice(0, 10) : null; // no guardamos IP real
 
-  stmt.run(id, createdAt, prompt, answer, hash, ua, ip_hint);
+  stmt.run(id, createdAt, req.tenant, prompt, answer, hash, ua, ip_hint);
 
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
@@ -177,7 +248,7 @@ app.get("/p/:id", (req, res) => {
 // datos para render en proof.html
 app.get("/api/proof/:id", (req, res) => {
   const id = req.params.id;
-  const row = db.prepare("SELECT id, created_at, prompt, answer, hash FROM proofs WHERE id = ?").get(id);
+  const row = db.prepare("SELECT id, created_at, tenant, prompt, answer, hash FROM proofs WHERE id = ?").get(id);
   if (!row) return res.status(404).json({ error: "No encontrado." });
   res.json(row);
 });

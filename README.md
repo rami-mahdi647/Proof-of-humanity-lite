@@ -37,6 +37,16 @@ We publish limitations and attack surfaces:
 - `docs/threat-model.md`
 - `docs/assumptions.md`
 
+
+## Authentication contract
+All protected endpoints require a license key **per request**:
+- Required header: `x-license-key: POH-XXXX-XXXX-XXXX`
+- Optional legacy fallback: query param `license_key`
+- Optional legacy environment fallback: `LICENSE_KEY` (for old deployments only)
+
+The server normalizes incoming keys with `trim().toUpperCase()` and validates format:
+`^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$`.
+
 ## Self-hosting
 This project is designed to be:
 - deployable in minutes
