@@ -6,12 +6,16 @@ const crypto = require("crypto");
 const fs = require("fs");
 const { nanoid } = require("nanoid");
 const path = require("path");
-const db = require("./db");
+const { db, incrementTenantDailyUsage, cleanupTenantDailyUsage } = require("./db");
 
 const app = express();
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "10kb" }));
 app.use(express.static(path.join(__dirname, "public")));
+
+ codex/implement-daily-usage-limit-tracking
+const isProduction = process.env.NODE_ENV === "production";
+const localDailyUsage = new Map(); // key: tenant|YYYY-MM-DD, val: count
 
 const LICENSES_FILE = path.join(__dirname, "licenses.json");
 const LICENSE_RELOAD_INTERVAL_MS = 45000;
@@ -97,6 +101,7 @@ function loadLicenses() {
 
 let LICENSES = loadLicenses();
  main
+ main
 
 function requireLicense(req, res, next) {
   if (req.path === "/health") return next();
@@ -150,11 +155,38 @@ function requireLicense(req, res, next) {
   next();
 }
 
+function attachTenantLimits(req, res, next) {
+  req.tenant = (process.env.TENANT_ID || process.env.LICENSE_KEY || "local-dev").trim();
+
+  const configuredMaxPerDay = Number.parseInt(process.env.MAX_PROOFS_PER_DAY || "1000", 10);
+  req.maxPerDay = Number.isInteger(configuredMaxPerDay) && configuredMaxPerDay > 0
+    ? configuredMaxPerDay
+    : 1000;
+
+  next();
+}
+
 app.get("/health", (req, res) => res.json({ ok: true }));
 app.use(requireLicense);
+app.use(attachTenantLimits);
 
 function sha256(input) {
   return crypto.createHash("sha256").update(input).digest("hex");
+}
+
+function dayKeyFromTimestamp(ts) {
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+function incrementDailyUsage(tenant, dayKey) {
+  if (!isProduction) {
+    const key = `${tenant}|${dayKey}`;
+    const nextValue = (localDailyUsage.get(key) || 0) + 1;
+    localDailyUsage.set(key, nextValue);
+    return nextValue;
+  }
+
+  return incrementTenantDailyUsage(tenant, dayKey);
 }
 
 // prompts simples y virales (rotan)
@@ -215,6 +247,18 @@ app.post("/api/prove", (req, res) => {
   if (answer.length > 240) return res.status(400).json({ error: "Respuesta demasiado larga (máx 240 caracteres)." });
 
   const createdAt = Date.now();
+  const dayKey = dayKeyFromTimestamp(createdAt);
+  const dailyUsageCount = incrementDailyUsage(req.tenant, dayKey);
+
+  if (dailyUsageCount > req.maxPerDay) {
+    return res.status(429).json({
+      error: "Límite diario alcanzado para este tenant.",
+      tenant: req.tenant,
+      dayKey,
+      maxPerDay: req.maxPerDay
+    });
+  }
+
   const id = nanoid(10);
   const nonce = crypto.randomBytes(16).toString("hex");
 
@@ -252,6 +296,14 @@ app.get("/api/proof/:id", (req, res) => {
   if (!row) return res.status(404).json({ error: "No encontrado." });
   res.json(row);
 });
+
+if (isProduction) {
+  const keepDays = Number.parseInt(process.env.TENANT_USAGE_RETENTION_DAYS || "", 10);
+  if (Number.isInteger(keepDays) && keepDays > 0) {
+    const removedRows = cleanupTenantDailyUsage(keepDays);
+    console.log(`🧹 tenant_daily_usage cleanup complete (removed ${removedRows} rows, keepDays=${keepDays})`);
+  }
+}
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ running on http://localhost:${PORT}`));
