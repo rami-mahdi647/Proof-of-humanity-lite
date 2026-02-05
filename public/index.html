@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Proof of Humanity (Lite)</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Proof of Humanity (Lite)</h1>
+      <p>Demuestra que eres humano en <b>10 segundos</b>. Sin email. Sin KYC. Sin wallet.</p>
+
+      <div class="row">
+        <span class="pill" id="promptPill">Cargando prompt…</span>
+        <button id="newPromptBtn" type="button">Otro prompt</button>
+      </div>
+
+      <label for="answer">Tu respuesta (máx 240):</label>
+      <textarea id="answer" maxlength="240" placeholder="Escribe algo real…"></textarea>
+      <div class="mini" id="counter">0/240</div>
+
+      <button id="proveBtn" type="button">Generar prueba</button>
+      <p class="mini" id="status"></p>
+
+      <div id="result" style="display:none;">
+        <hr />
+        <p><b>Listo.</b> Comparte este link:</p>
+        <pre id="shareUrl"></pre>
+        <div class="row">
+          <button id="copyBtn" type="button">Copiar</button>
+          <a id="openBtn" class="pill" href="#" target="_blank" rel="noreferrer">Abrir prueba</a>
+        </div>
+      </div>
+    </div>
+
+    <p class="mini" style="margin-top:14px;">
+      Nota: MVP conceptual. No guardamos IP real (solo un hash corto).
+    </p>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
