@@ -16,7 +16,8 @@ Increase cost of automation and reduce cheap Sybil behavior for wallet-facing ac
 - Can solve prompts using LLMs (partially)
 
 ## Defenses (MVP)
-- rate limiting per IP hint
+- short-window rate limiting per IP hint (in-memory)
+- tenant daily usage quota persisted in SQLite (`tenant_daily_usage`), so production limits no longer depend on in-memory process state
 - input constraints (length, timing)
 - per-proof nonce + timestamp
 - public hash for audit trail
