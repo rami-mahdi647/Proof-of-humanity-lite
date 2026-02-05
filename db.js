@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS proofs (
   prompt TEXT NOT NULL,
   answer TEXT NOT NULL,
   hash TEXT NOT NULL,
+  tenant TEXT,
   ua TEXT,
   ip_hint TEXT
 );
@@ -38,6 +39,13 @@ const upsertTenantDailyUsageStmt = db.prepare(`
 const getTenantDailyUsageStmt = db.prepare(`
   SELECT count FROM tenant_daily_usage WHERE tenant = ? AND day_key = ?
 `);
+
+ codex/update-database-for-tenant-column
+try {
+  db.exec("ALTER TABLE proofs ADD COLUMN tenant TEXT");
+} catch (error) {
+  const isDuplicateColumn = error && (error.code === "SQLITE_ERROR" || error.code === "SQLITE_CONSTRAINT") && /duplicate column name/i.test(error.message || "");
+  if (!isDuplicateColumn) throw error;
 
  codex/implement-daily-usage-limit-tracking
 const deleteOldTenantUsageStmt = db.prepare(`
@@ -72,6 +80,7 @@ try {
   db.exec("ALTER TABLE proofs ADD COLUMN tenant TEXT");
 } catch {
   // columna ya existe
+ main
 }
 
 module.exports = db;
