@@ -3,36 +3,190 @@ require("dotenv").config();
 const express = require("express");
 const helmet = require("helmet");
 const crypto = require("crypto");
+const fs = require("fs");
 const { nanoid } = require("nanoid");
 const path = require("path");
-const db = require("./db");
+const { db, incrementTenantDailyUsage, cleanupTenantDailyUsage } = require("./db");
 
 const app = express();
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "10kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
+ codex/implement-daily-usage-limit-tracking
+const isProduction = process.env.NODE_ENV === "production";
+const localDailyUsage = new Map(); // key: tenant|YYYY-MM-DD, val: count
+
+const LICENSES_FILE = path.join(__dirname, "licenses.json");
+const LICENSE_RELOAD_INTERVAL_MS = 45000;
+
+const licensesState = {
+  values: null,
+  mtimeMs: null,
+  hasValidSnapshot: false,
+  invalidated: true
+};
+
+function normalizeLicenses(raw) {
+  const entries = Array.isArray(raw) ? raw : raw?.licenses;
+  if (!Array.isArray(entries)) {
+    throw new Error("licenses.json must contain an array or a { licenses: [] } object");
+  }
+
+  return new Set(
+    entries
+      .map((value) => value?.toString().trim())
+      .filter(Boolean)
+  );
+}
+
+function loadLicenses(force = false) {
+  try {
+    const stats = fs.statSync(LICENSES_FILE);
+    const unchanged = !force && !licensesState.invalidated && licensesState.mtimeMs === stats.mtimeMs;
+    if (unchanged && licensesState.hasValidSnapshot) {
+      return licensesState.values;
+    }
+
+    const file = fs.readFileSync(LICENSES_FILE, "utf8");
+    const parsed = JSON.parse(file);
+    licensesState.values = normalizeLicenses(parsed);
+    licensesState.mtimeMs = stats.mtimeMs;
+    licensesState.hasValidSnapshot = true;
+    licensesState.invalidated = false;
+    return licensesState.values;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      licensesState.values = null;
+      licensesState.mtimeMs = null;
+      licensesState.hasValidSnapshot = false;
+      licensesState.invalidated = false;
+      return null;
+    }
+
+    console.warn(`[license] Failed to reload ${LICENSES_FILE}: ${error.message}`);
+    licensesState.invalidated = false;
+
+    if (licensesState.hasValidSnapshot) {
+      return licensesState.values;
+    }
+
+    return null;
+  }
+}
+
+loadLicenses(true);
+setInterval(() => loadLicenses(), LICENSE_RELOAD_INTERVAL_MS).unref();
+fs.watchFile(LICENSES_FILE, { interval: 1000 }, () => {
+  licensesState.invalidated = true;
+  loadLicenses();
+});
+ codex/refactorizar-requirelicense-para-usar-headers
+const LICENSES = {
+  "POH-ABCD-1234-Z9Y8": {
+    tenant: "demo-wallet",
+    plan: "starter",
+    maxPerDay: 500
+  }
+};
+
+function loadLicenses() {
+  try {
+    const raw = fs.readFileSync("licenses.json", "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+let LICENSES = loadLicenses();
+ main
+ main
+
 function requireLicense(req, res, next) {
   if (req.path === "/health") return next();
 
-  const key = (process.env.LICENSE_KEY || "").trim();
-  const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(key);
+ codex/refactorizar-requirelicense-para-usar-headers
+  const incomingKey = req.get("x-license-key") || req.query.license_key || process.env.LICENSE_KEY || "";
+  const key = incomingKey.toString().trim().toUpperCase();
+  const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(key);
+  const license = LICENSES[key];
 
-  if (!key || !okFormat) {
+  if (!key || !okFormat || !license) {
+
+  const key = (process.env.LICENSE_KEY || "").trim().toUpperCase();
+  const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(key);
+
+  if (!okFormat) {
+ main
     return res.status(503).json({
-      error: "License not configured",
-      hint: "Set LICENSE_KEY env var (format: POH-XXXX-XXXX-XXXX)."
+      error: "Invalid or missing license",
+      hint: "Send x-license-key header (format: POH-XXXX-XXXX-XXXX)."
     });
   }
+
+ codex/add-periodic-license-reload-with-error-handling
+  const allowedLicenses = loadLicenses();
+  if (allowedLicenses && !allowedLicenses.has(key)) {
+    return res.status(403).json({
+      error: "License key not allowed"
+    });
+  }
+
+
+ codex/refactorizar-requirelicense-para-usar-headers
+  req.tenant = license.tenant;
+  req.plan = license.plan;
+  req.maxPerDay = license.maxPerDay;
+
+  const entry = LICENSES[key];
+  if (!entry) {
+    return res.status(403).json({
+      error: "Invalid license key"
+    });
+  }
+
+  req.tenant = entry.tenant;
+  req.plan = entry.plan;
+  req.maxPerDay = entry.max_per_day ?? 5000;
+ main
+
+ main
+  next();
+}
+
+function attachTenantLimits(req, res, next) {
+  req.tenant = (process.env.TENANT_ID || process.env.LICENSE_KEY || "local-dev").trim();
+
+  const configuredMaxPerDay = Number.parseInt(process.env.MAX_PROOFS_PER_DAY || "1000", 10);
+  req.maxPerDay = Number.isInteger(configuredMaxPerDay) && configuredMaxPerDay > 0
+    ? configuredMaxPerDay
+    : 1000;
 
   next();
 }
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 app.use(requireLicense);
+app.use(attachTenantLimits);
 
 function sha256(input) {
   return crypto.createHash("sha256").update(input).digest("hex");
+}
+
+function dayKeyFromTimestamp(ts) {
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+function incrementDailyUsage(tenant, dayKey) {
+  if (!isProduction) {
+    const key = `${tenant}|${dayKey}`;
+    const nextValue = (localDailyUsage.get(key) || 0) + 1;
+    localDailyUsage.set(key, nextValue);
+    return nextValue;
+  }
+
+  return incrementTenantDailyUsage(tenant, dayKey);
 }
 
 // prompts simples y virales (rotan)
@@ -53,6 +207,24 @@ function tooFast(ip) {
   return now - last < 4000; // 4s
 }
 
+const tenantDaily = new Map(); // tenant -> { dayKey, count }
+function dayKey() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`;
+}
+
+function tenantExceeded(tenant, max) {
+  const key = dayKey();
+  const cur = tenantDaily.get(tenant) || { dayKey: key, count: 0 };
+  if (cur.dayKey !== key) {
+    cur.dayKey = key;
+    cur.count = 0;
+  }
+  cur.count++;
+  tenantDaily.set(tenant, cur);
+  return cur.count > max;
+}
+
 app.get("/api/prompt", (req, res) => {
   const prompt = PROMPTS[Math.floor(Math.random() * PROMPTS.length)];
   res.json({ prompt });
@@ -61,6 +233,10 @@ app.get("/api/prompt", (req, res) => {
 app.post("/api/prove", (req, res) => {
   const ip = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").toString().split(",")[0].trim();
   if (tooFast(ip)) return res.status(429).json({ error: "Demasiado rápido. Espera unos segundos." });
+
+  if (tenantExceeded(req.tenant, req.maxPerDay)) {
+    return res.status(429).json({ error: "Daily limit reached for this license" });
+  }
 
   const prompt = (req.body?.prompt || "").toString().trim();
   const answerRaw = (req.body?.answer || "").toString();
@@ -71,6 +247,18 @@ app.post("/api/prove", (req, res) => {
   if (answer.length > 240) return res.status(400).json({ error: "Respuesta demasiado larga (máx 240 caracteres)." });
 
   const createdAt = Date.now();
+  const dayKey = dayKeyFromTimestamp(createdAt);
+  const dailyUsageCount = incrementDailyUsage(req.tenant, dayKey);
+
+  if (dailyUsageCount > req.maxPerDay) {
+    return res.status(429).json({
+      error: "Límite diario alcanzado para este tenant.",
+      tenant: req.tenant,
+      dayKey,
+      maxPerDay: req.maxPerDay
+    });
+  }
+
   const id = nanoid(10);
   const nonce = crypto.randomBytes(16).toString("hex");
 
@@ -79,13 +267,18 @@ app.post("/api/prove", (req, res) => {
 
   const stmt = db.prepare(`
     INSERT INTO proofs (id, created_at, prompt, answer, hash, tenant, ua, ip_hint)
+    INSERT INTO proofs (id, created_at, tenant, prompt, answer, hash, ua, ip_hint)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const ua = (req.headers["user-agent"] || "").toString().slice(0, 180);
   const ip_hint = ip ? sha256(ip).slice(0, 10) : null; // no guardamos IP real
 
+ codex/update-database-for-tenant-column
   stmt.run(id, createdAt, prompt, answer, hash, req.tenant || null, ua, ip_hint);
+
+  stmt.run(id, createdAt, req.tenant, prompt, answer, hash, ua, ip_hint);
+ main
 
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
@@ -104,10 +297,18 @@ app.get("/p/:id", (req, res) => {
 // datos para render en proof.html
 app.get("/api/proof/:id", (req, res) => {
   const id = req.params.id;
-  const row = db.prepare("SELECT id, created_at, prompt, answer, hash FROM proofs WHERE id = ?").get(id);
+  const row = db.prepare("SELECT id, created_at, tenant, prompt, answer, hash FROM proofs WHERE id = ?").get(id);
   if (!row) return res.status(404).json({ error: "No encontrado." });
   res.json(row);
 });
+
+if (isProduction) {
+  const keepDays = Number.parseInt(process.env.TENANT_USAGE_RETENTION_DAYS || "", 10);
+  if (Number.isInteger(keepDays) && keepDays > 0) {
+    const removedRows = cleanupTenantDailyUsage(keepDays);
+    console.log(`🧹 tenant_daily_usage cleanup complete (removed ${removedRows} rows, keepDays=${keepDays})`);
+  }
+}
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ running on http://localhost:${PORT}`));

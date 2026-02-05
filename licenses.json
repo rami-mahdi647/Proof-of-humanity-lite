@@ -1,0 +1,12 @@
+{
+  "POH-ABCD-1234-Z9Y8": {
+    "tenant": "WalletDemo",
+    "plan": "standard",
+    "max_per_day": 5000
+  },
+  "POH-1111-2222-3333": {
+    "tenant": "AnotherWallet",
+    "plan": "pro",
+    "max_per_day": 50000
+  }
+}
