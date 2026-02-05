@@ -13,6 +13,15 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "10kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
+ codex/refactorizar-requirelicense-para-usar-headers
+const LICENSES = {
+  "POH-ABCD-1234-Z9Y8": {
+    tenant: "demo-wallet",
+    plan: "starter",
+    maxPerDay: 500
+  }
+};
+
 function loadLicenses() {
   try {
     const raw = fs.readFileSync("licenses.json", "utf8");
@@ -23,19 +32,34 @@ function loadLicenses() {
 }
 
 let LICENSES = loadLicenses();
+ main
 
 function requireLicense(req, res, next) {
   if (req.path === "/health") return next();
+
+ codex/refactorizar-requirelicense-para-usar-headers
+  const incomingKey = req.get("x-license-key") || req.query.license_key || process.env.LICENSE_KEY || "";
+  const key = incomingKey.toString().trim().toUpperCase();
+  const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(key);
+  const license = LICENSES[key];
+
+  if (!key || !okFormat || !license) {
 
   const key = (process.env.LICENSE_KEY || "").trim().toUpperCase();
   const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(key);
 
   if (!okFormat) {
+ main
     return res.status(503).json({
-      error: "License not configured",
-      hint: "Set LICENSE_KEY env var (format: POH-XXXX-XXXX-XXXX)."
+      error: "Invalid or missing license",
+      hint: "Send x-license-key header (format: POH-XXXX-XXXX-XXXX)."
     });
   }
+
+ codex/refactorizar-requirelicense-para-usar-headers
+  req.tenant = license.tenant;
+  req.plan = license.plan;
+  req.maxPerDay = license.maxPerDay;
 
   const entry = LICENSES[key];
   if (!entry) {
@@ -47,6 +71,7 @@ function requireLicense(req, res, next) {
   req.tenant = entry.tenant;
   req.plan = entry.plan;
   req.maxPerDay = entry.max_per_day ?? 5000;
+ main
 
   next();
 }
