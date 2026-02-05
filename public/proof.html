@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Proof</title>
+  <link rel="stylesheet" href="/styles.css" />
+
+  <!-- OG básico (mejorable con imagen dinámica luego) -->
+  <meta property="og:title" content="I proved I'm human." />
+  <meta property="og:description" content="No email. No KYC. Just proof." />
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1 id="title">Cargando prueba…</h1>
+      <p class="mini" id="meta"></p>
+      <hr />
+      <p><b>Prompt</b></p>
+      <pre id="prompt"></pre>
+      <p><b>Respuesta</b></p>
+      <pre id="answer"></pre>
+      <p><b>Hash público</b></p>
+      <pre id="hash"></pre>
+
+      <div class="row">
+        <button id="copyLink" type="button">Copiar link</button>
+        <a class="pill" href="/" >Crear otra</a>
+      </div>
+      <p class="mini" id="status"></p>
+    </div>
+  </div>
+
+  <script>
+    const id = location.pathname.split("/").pop();
+    const $ = (s) => document.querySelector(s);
+
+    fetch(`/api/proof/${id}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) throw new Error(data.error);
+        $("#title").textContent = `Proof #${data.id}`;
+        $("#meta").textContent = new Date(data.created_at).toLocaleString();
+        $("#prompt").textContent = data.prompt;
+        $("#answer").textContent = data.answer;
+        $("#hash").textContent = data.hash;
+      })
+      .catch(err => {
+        $("#title").textContent = "No encontrado";
+        $("#status").textContent = err.message;
+      });
+
+    $("#copyLink").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(location.href);
+        $("#status").textContent = "✅ Copiado.";
+      } catch {
+        $("#status").textContent = "No pude copiar automáticamente.";
+      }
+    });
+  </script>
+</body>
+</html>
