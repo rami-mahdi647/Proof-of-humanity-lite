@@ -1,3 +1,5 @@
+require("dotenv").config();
+
 const express = require("express");
 const helmet = require("helmet");
 const crypto = require("crypto");
@@ -9,6 +11,25 @@ const app = express();
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "10kb" }));
 app.use(express.static(path.join(__dirname, "public")));
+
+function requireLicense(req, res, next) {
+  if (req.path === "/health") return next();
+
+  const key = (process.env.LICENSE_KEY || "").trim();
+  const okFormat = /^POH-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(key);
+
+  if (!key || !okFormat) {
+    return res.status(503).json({
+      error: "License not configured",
+      hint: "Set LICENSE_KEY env var (format: POH-XXXX-XXXX-XXXX)."
+    });
+  }
+
+  next();
+}
+
+app.get("/health", (req, res) => res.json({ ok: true }));
+app.use(requireLicense);
 
 function sha256(input) {
   return crypto.createHash("sha256").update(input).digest("hex");

@@ -1,0 +1,9 @@
+services:
+  poh-lite:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - LICENSE_KEY=POH-ABCD-1234-Z9Y8
+    volumes:
+      - ./data:/app/data
