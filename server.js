@@ -13,6 +13,70 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "10kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
+const LICENSES_FILE = path.join(__dirname, "licenses.json");
+const LICENSE_RELOAD_INTERVAL_MS = 45000;
+
+const licensesState = {
+  values: null,
+  mtimeMs: null,
+  hasValidSnapshot: false,
+  invalidated: true
+};
+
+function normalizeLicenses(raw) {
+  const entries = Array.isArray(raw) ? raw : raw?.licenses;
+  if (!Array.isArray(entries)) {
+    throw new Error("licenses.json must contain an array or a { licenses: [] } object");
+  }
+
+  return new Set(
+    entries
+      .map((value) => value?.toString().trim())
+      .filter(Boolean)
+  );
+}
+
+function loadLicenses(force = false) {
+  try {
+    const stats = fs.statSync(LICENSES_FILE);
+    const unchanged = !force && !licensesState.invalidated && licensesState.mtimeMs === stats.mtimeMs;
+    if (unchanged && licensesState.hasValidSnapshot) {
+      return licensesState.values;
+    }
+
+    const file = fs.readFileSync(LICENSES_FILE, "utf8");
+    const parsed = JSON.parse(file);
+    licensesState.values = normalizeLicenses(parsed);
+    licensesState.mtimeMs = stats.mtimeMs;
+    licensesState.hasValidSnapshot = true;
+    licensesState.invalidated = false;
+    return licensesState.values;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      licensesState.values = null;
+      licensesState.mtimeMs = null;
+      licensesState.hasValidSnapshot = false;
+      licensesState.invalidated = false;
+      return null;
+    }
+
+    console.warn(`[license] Failed to reload ${LICENSES_FILE}: ${error.message}`);
+    licensesState.invalidated = false;
+
+    if (licensesState.hasValidSnapshot) {
+      return licensesState.values;
+    }
+
+    return null;
+  }
+}
+
+loadLicenses(true);
+setInterval(() => loadLicenses(), LICENSE_RELOAD_INTERVAL_MS).unref();
+fs.watchFile(LICENSES_FILE, { interval: 1000 }, () => {
+  licensesState.invalidated = true;
+  loadLicenses();
+});
  codex/refactorizar-requirelicense-para-usar-headers
 const LICENSES = {
   "POH-ABCD-1234-Z9Y8": {
@@ -56,6 +120,15 @@ function requireLicense(req, res, next) {
     });
   }
 
+ codex/add-periodic-license-reload-with-error-handling
+  const allowedLicenses = loadLicenses();
+  if (allowedLicenses && !allowedLicenses.has(key)) {
+    return res.status(403).json({
+      error: "License key not allowed"
+    });
+  }
+
+
  codex/refactorizar-requirelicense-para-usar-headers
   req.tenant = license.tenant;
   req.plan = license.plan;
@@ -73,6 +146,7 @@ function requireLicense(req, res, next) {
   req.maxPerDay = entry.max_per_day ?? 5000;
  main
 
+ main
   next();
 }
 

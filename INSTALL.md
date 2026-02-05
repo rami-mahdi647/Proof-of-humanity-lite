@@ -35,3 +35,12 @@ npm start
 ## Configuration
 - `LICENSE_KEY` (optional, legacy fallback only)
 - `PORT` (optional)
+
+## License file hot reload (optional)
+- You can add `licenses.json` at the project root to allow-list license keys.
+- Supported formats:
+  - `[
+      "POH-ABCD-1234-Z9Y8"
+    ]`
+  - `{ "licenses": ["POH-ABCD-1234-Z9Y8"] }`
+- The server hot-reloads `licenses.json` automatically (mtime/cache + periodic reload + file watcher), so no restart is required after edits.
